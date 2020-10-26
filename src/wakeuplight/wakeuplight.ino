@@ -4,6 +4,8 @@
 #include <WiFiUdp.h>
 #include <Adafruit_NeoPixel.h>
 
+// BOARD: LOLIN(WEMOS) D1 R2 & mini
+
 //----------------------------------------------------------------------
 // User configuration
 
@@ -127,6 +129,8 @@ void setup(void)
   Serial.println("");
   Serial.println("System start");
 
+  testDaylightSavingTime();
+
   systemPixel.begin();
 
   // Only run wifi in STA mode. By default is also raises an AP that is unwanted.
@@ -247,12 +251,14 @@ void systemPixelSetColor(SystemColor c)
     systemPixel.show();
   }  
 
+/*
   Serial.print("System: pixel color ");
   Serial.print(c.r);
   Serial.print(" ");
   Serial.print(c.g);
   Serial.print(" ");
   Serial.println(c.b);
+  */
 }
 
 
@@ -301,17 +307,105 @@ void timePrintTime(uint32_t secsSinceDayStart)
   Serial.println(secsSinceDayStart % 60); 
 }
 
-// based upon Edgar Bonet's code in https://github.com/RoboUlbricht/arduinoslovakia/blob/master/time/time_avr_dst_fixed/time_avr_dst_fixed.ino
-// untested here
+#define MARCH 2
+#define OCTOBER 9
+#define ONE_HOUR 3600
+
+int dayOfWeek(int d, int m, int y) 
+{ 
+    static int t[] = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 }; 
+    y -= m < 3; 
+    return ( y + y/4 - y/100 + y/400 + t[m-1] + d) % 7; 
+} 
+
 uint32_t timeEuDst(uint32_t epoch)
 {
-  if ((uint8_t)(epoch >> 24) >= 194) epoch -= 3029443200U;
-    epoch = (epoch + 655513200) / 604800 * 28;
+  struct tm *timeInfo = gmtime((time_t*)&epoch);
+
+  /*
+  char buf[10];
+  sprintf(buf, "%d-%d-%d", timeInfo->tm_year + 1900, timeInfo->tm_mon + 1, timeInfo->tm_mday );
+  Serial.print("Time: gmdate: ");
+  Serial.println(buf);
   
-  if ((uint16_t)(epoch % 1461) < 856) 
-    return 3600;
-  else 
+  sprintf(buf, "%02d:%02d", timeInfo->tm_hour, timeInfo->tm_min);
+  Serial.print("Time: gmtime: ");
+  Serial.println(buf);
+  */
+ 
+  uint16_t year = timeInfo->tm_year + 1900;
+  uint8_t month = timeInfo->tm_mon;
+  uint8_t weekDay = timeInfo->tm_wday;
+  uint8_t monthDay = timeInfo->tm_mday - 1;
+  uint8_t hour = timeInfo->tm_hour;
+
+  if ((month > MARCH) && (month < OCTOBER))
+    return ONE_HOUR;
+  if (month < MARCH)
     return 0;
+  if (month > OCTOBER)
+    return 0;
+
+  uint8_t firstWeekDayOfMonth = dayOfWeek(1, month + 1, year);
+  
+  /*
+  Serial.print("Time: gmtime: ");
+  Serial.print(" firstWeekDayOfMonth: ");
+  Serial.println(firstWeekDayOfMonth);
+  */
+  
+  // determine monthDay of last Sunday
+  uint8_t finalSundayMonthDay = 0;
+  for (uint8_t d = 0; d < 31; d++)
+  {
+    if (((firstWeekDayOfMonth + d) % 7) == 0)
+    {
+      // sunday
+      if (d > finalSundayMonthDay)
+        finalSundayMonthDay = d;
+    }
+  }
+
+  if (month == MARCH) 
+  {
+    /*
+    Serial.print("Time: gmtime: March: ");
+    Serial.print(" finalSundayMonthDay: ");
+    Serial.print(finalSundayMonthDay);
+    Serial.print(" monthDay: ");
+    Serial.print(monthDay);
+    Serial.print(" hour: ");
+    Serial.println(hour);
+    */
+    
+    if (monthDay < finalSundayMonthDay)
+      return 0;
+    if (monthDay > finalSundayMonthDay)
+      return ONE_HOUR;
+    if (hour < 2)
+      return 0;
+      
+    return ONE_HOUR;
+  }
+
+  /*
+  Serial.print("Time: gmtime: October: ");
+  Serial.print(" finalSundayMonthDay: ");
+  Serial.print(finalSundayMonthDay);
+  Serial.print(" monthDay: ");
+  Serial.print(monthDay);
+  Serial.print(" hour: ");
+  Serial.println(hour);
+  */
+  
+  if (monthDay < finalSundayMonthDay)
+    return ONE_HOUR;
+  if (monthDay > finalSundayMonthDay)
+    return 0;
+  if (hour < 2)
+    return ONE_HOUR;
+
+  return 0;
 }
 
 uint32_t timeSecsSinceDayStartLocal()
@@ -321,7 +415,7 @@ uint32_t timeSecsSinceDayStartLocal()
   // This code assumes wake up is before bed time and all times are in the same day.
 
   uint32_t epoch = timeCurrentEpoch();
-  uint32_t dstOffsetSec = timeEuDst(epoch);
+  uint32_t dstOffsetSec = timeEuDst(epoch + timeZoneOffsetSec);
 
   uint32_t epochLocal = epoch + timeZoneOffsetSec + dstOffsetSec;
 
@@ -451,6 +545,93 @@ void timeCheckNtp(uint32_t secsSinceDayStartLocal)
     Serial.println("Time: Ntp resync allowed");    
     timeNtpResyncAllowed = true;
   }
+}
+
+void testDaylightSavingTime()
+{
+  // Date and time (GMT): Saturday, March 28, 2020 7:00:00 AM
+  // 1585378800
+  if (timeEuDst(1585378800) != 0)
+    Serial.println("Time: test 1 failed");    
+
+  // Date and time (GMT): Sunday, March 29, 2020 7:00:00 AM
+  // 1585465200
+  if (timeEuDst(1585465200) != ONE_HOUR)
+    Serial.println("Time: test 2 failed");    
+
+  // Date and time (GMT): Monday, March 30, 2020 7:00:00 AM
+  // Epoch timestamp: 1585551600
+  if (timeEuDst(1585551600) != ONE_HOUR)
+    Serial.println("Time: test 3 failed");    
+
+  // Date and time (GMT): Saturday, October 24, 2020 7:00:00 AM
+  // 1603522800
+  if (timeEuDst(1603522800) != ONE_HOUR)
+    Serial.println("Time: test 4 failed");    
+  
+  // Date and time (GMT): Sunday, October 25, 2020 7:00:00 AM
+  // 1603609200
+  if (timeEuDst(1603609200) != 0)
+    Serial.println("Time: test 5 failed");    
+
+
+  // 2021
+
+  // Epoch timestamp: 1616828400
+  // Date and time (GMT): Saturday, March 27, 2021 7:00:00 AM
+  if (timeEuDst(1616828400) != 0)
+    Serial.println("Time: test 6 failed");    
+
+  // Epoch timestamp: 1616914800
+  // Date and time (GMT): Sunday, March 28, 2021 7:00:00 AM
+  if (timeEuDst(1616914800) != ONE_HOUR)
+    Serial.println("Time: test 7 failed");    
+
+  // Epoch timestamp: 1617001200
+  // Date and time (GMT): Monday, March 29, 2021 7:00:00 AM
+  if (timeEuDst(1617001200) != ONE_HOUR)
+    Serial.println("Time: test 8 failed");    
+
+  // Epoch timestamp: 1635577200
+  // Date and time (GMT): Saturday, October 30, 2021 7:00:00 AM
+  if (timeEuDst(1635577200) != ONE_HOUR)
+    Serial.println("Time: test 9 failed");    
+
+  // Epoch timestamp: 1635663600
+  // Date and time (GMT): Sunday, October 31, 2021 7:00:00 AM
+  if (timeEuDst(1635663600) != 0)
+    Serial.println("Time: test 10 failed");    
+
+
+  // 2022
+
+  // Epoch timestamp: 1648278000
+  // Date and time (GMT): Saturday, March 26, 2022 7:00:00 AM
+  if (timeEuDst(1616828400) != 0)
+    Serial.println("Time: test 11 failed");    
+
+  // Epoch timestamp: 1648364400
+  // Date and time (GMT): Sunday, March 27, 2022 7:00:00 AM
+  if (timeEuDst(1616914800) != ONE_HOUR)
+    Serial.println("Time: test 12 failed");    
+
+  // Epoch timestamp: 1648450800
+  // Date and time (GMT): Monday, March 28, 2022 7:00:00 AM
+  if (timeEuDst(1617001200) != ONE_HOUR)
+    Serial.println("Time: test 13 failed");    
+
+  // Epoch timestamp: 1667026800
+  // Date and time (GMT): Saturday, October 29, 2022 7:00:00 AMAM
+  if (timeEuDst(1635577200) != ONE_HOUR)
+    Serial.println("Time: test 14 failed");    
+
+  // Epoch timestamp: 1667113200
+  // Date and time (GMT): Sunday, October 30, 2022 7:00:00 AM
+  if (timeEuDst(1635663600) != 0)
+    Serial.println("Time: test 15 failed");    
+
+
+    
 }
 
 //----------------------------------------------------------------------
